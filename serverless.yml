@@ -1,0 +1,137 @@
+
+##########################################################################
+# DISCLAIMER: The author, James W. Price, of the material herein has     #
+# used his best effort in preparing material. The author makes           #
+# no warranty of any kind, expressed or implied, with regard to material #
+# or documentation. The author shall not be liable in any event for     #
+# incidental or consequential damages in connection with, or arising out #
+# of, the furnishing, performance, or use of this material.              #
+##########################################################################
+
+service: ZZZZZZZZ - match name of project
+
+frameworkVersion: '2'
+
+plugins:
+  - serverless-pseudo-parameters
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  
+
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - dynamodb:PutItem
+        - dynamodb:GetItem
+      Resource:
+        - arn:aws:dynamodb:#{AWS::Region}:#{AWS::AccountId}:table/ordersTable
+    - Effect: Allow
+      Action:
+        - kinesis:PutRecord
+      Resource:
+        - arn:aws:kinesis:#{AWS::Region}:#{AWS::AccountId}:stream/order-events
+    - Effect: Allow
+      Action:
+        - ses:SendEmail
+      Resource:
+        - "*"
+      Condition:
+        StringEquals:
+          ses:FromAddress:
+            - XXXXXXX@XXXXXXX - see below under notifyExternalPartner
+    - Effect: Allow
+      Action:
+        - sqs:SendMessage
+      Resource:
+        - arn:aws:sqs:#{AWS::Region}:#{AWS::AccountId}:deliveryServiceQueue
+        - arn:aws:sqs:#{AWS::Region}:#{AWS::AccountId}:customerServiceQueue
+
+functions:
+  createOrder:
+    handler: handler.createOrder
+    events:
+      - http:
+          path: /order
+          method: post
+    environment:
+      orderTableName: ordersTable
+      orderStreamName: order-events
+  orderFulfillment:
+    handler: handler.orderFulfillment
+    events:
+      - http:
+          path: /order/fulfill
+          method: post
+    environment:
+      orderTableName: ordersTable
+      orderStreamName: order-events
+  notifyExternalParties:
+    handler: handler.notifyExternalParties
+    events:
+      - stream:
+          arn: arn:aws:kinesis:#{AWS::Region}:#{AWS::AccountId}:stream/order-events
+    environment:
+      region: ${self:provider.region}
+      cakeProducerEmail: YYYYYYY@YYYYYYY - must be different email address than below
+      orderingSystemEmail: XXXXXXX@XXXXXXX
+      deliveryCompanyQueue:
+        Ref: deliveryServiceQueue
+      orderTableName: ordersTable
+  notifyDeliveryCompany:
+    handler: handler.notifyDeliveryCompany
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - deliveryServiceQueue
+              - Arn
+          batchSize: 1
+  orderDelivered:
+    handler: handler.orderDelivered
+    events:
+      - http:
+          path: /order/delivered
+          method: post
+    environment:
+      region: ${self:provider.region}
+      orderTableName: ordersTable
+      customerServiceQueue:
+        Ref: customerServiceQueue
+  notifyCustomerService:
+    handler: handler.notifyCustomerService
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - customerServiceQueue
+              - Arn
+          batchSize: 1
+
+resources:
+  Resources:
+    orderEventsStream:
+      Type: AWS::Kinesis::Stream
+      Properties:
+        Name: order-events
+        ShardCount: 1
+    orderTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ordersTable
+        AttributeDefinitions:
+          - AttributeName: "orderId"
+            AttributeType: "S"
+        KeySchema:
+          - AttributeName: "orderId"
+            KeyType: "HASH"
+        BillingMode: PAY_PER_REQUEST
+    deliveryServiceQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: deliveryServiceQueue
+    customerServiceQueue:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: customerServiceQueue
